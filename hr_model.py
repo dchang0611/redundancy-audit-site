@@ -40,7 +40,7 @@ RECENCY_WEIGHT_2025 = 0.90
 RECENCY_WEIGHT_2026 = 1.40
 
 # If True, build historical out-of-sample backtest rows for all dates > VALID_END_DATE
-RUN_BACKTEST = True
+RUN_BACKTEST = os.getenv("RUN_BACKTEST", "true").lower() == "true"
 
 # If True, also create a forward-looking board for TARGET_DATE
 RUN_FORWARD_BOARD = True
@@ -2402,6 +2402,10 @@ def fetch_weather_for_game(lat: float, lon: float, start_iso_utc: str) -> dict:
             "relative_humidity": DEFAULT_REL_HUMIDITY,
         }
 
+    target_dt = pd.to_datetime(start_iso_utc, utc=True)
+    if target_dt.date() < pd.Timestamp.now(tz="UTC").date():
+        return fetch_historical_weather_for_game(lat, lon, start_iso_utc)
+
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -2431,7 +2435,6 @@ def fetch_weather_for_game(lat: float, lon: float, start_iso_utc: str) -> dict:
             "relative_humidity": DEFAULT_REL_HUMIDITY,
         }
 
-    target_dt = pd.to_datetime(start_iso_utc, utc=True)
     weather_df = pd.DataFrame({
         "time": pd.to_datetime(times, utc=True),
         "temp_f": hourly.get("temperature_2m", []),
@@ -2745,8 +2748,11 @@ def get_team_id_map() -> Dict[str, int]:
     return {t["name"]: int(t["id"]) for t in payload.get("teams", [])}
 
 
-def get_active_roster_ids(team_id: int) -> List[int]:
-    payload = get_json(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster", params={"rosterType": "active"})
+def get_active_roster_ids(team_id: int, target_date: Optional[str] = None) -> List[int]:
+    params = {"rosterType": "active"}
+    if target_date:
+        params["date"] = target_date
+    payload = get_json(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster", params=params)
     if not payload:
         return []
     ids = []
@@ -2860,6 +2866,10 @@ def build_latest_matchup_snapshot(model_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, target_date: str) -> pd.DataFrame:
+    cutoff = pd.to_datetime(target_date, errors="coerce")
+    if pd.notna(cutoff):
+        model_df = model_df[pd.to_datetime(model_df["game_date"], errors="coerce") < cutoff].copy()
+        pa_df = pa_df[pd.to_datetime(pa_df["game_date"], errors="coerce") < cutoff].copy()
     slate = get_daily_slate(target_date)
     if slate.empty:
         return pd.DataFrame()
@@ -2921,8 +2931,8 @@ def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, targe
         if away_team_id is None or home_team_id is None:
             continue
 
-        away_roster = get_active_roster_ids(away_team_id)
-        home_roster = get_active_roster_ids(home_team_id)
+        away_roster = get_active_roster_ids(away_team_id, target_date)
+        home_roster = get_active_roster_ids(home_team_id, target_date)
 
         away_hitters = batter_snapshot[batter_snapshot["batter"].isin(away_roster)].copy()
         home_hitters = batter_snapshot[batter_snapshot["batter"].isin(home_roster)].copy()

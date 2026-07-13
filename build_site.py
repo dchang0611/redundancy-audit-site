@@ -35,7 +35,11 @@ def build_backtest_payload() -> dict:
     summary_path = ROOT / f"{PREFIX}_backtest_summary.csv"
     scored_path = ROOT / f"{PREFIX}_scored_test_rows.csv"
     if not summary_path.exists() or not scored_path.exists():
-        return {"summary": [], "daily": [], "drivers": []}
+        try:
+            with urlopen("https://dchang0611.github.io/redundancy-audit-site/data/board.json", timeout=15) as response:
+                return json.load(response).get("backtest", {"summary": [], "daily": [], "drivers": []})
+        except Exception:
+            return {"summary": [], "daily": [], "drivers": []}
 
     summary = pd.read_csv(summary_path)
     summary_records = [
