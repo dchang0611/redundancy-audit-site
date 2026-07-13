@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from urllib.request import urlopen
 
-BASE = "https://dchang0611.github.io/redundancy-audit-site"
+BASE = "https://dchang0611.github.io/dc-daily-home-run-board"
 DATA = Path(__file__).resolve().parent / "site" / "data"
 HISTORY = DATA / "history"
 

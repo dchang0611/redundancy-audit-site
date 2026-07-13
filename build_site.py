@@ -17,7 +17,7 @@ HISTORY = SITE / "data" / "history"
 
 def restore_history() -> None:
     """Carry prior deployed snapshots into the next immutable Pages artifact."""
-    base = os.getenv("HISTORY_BASE_URL", "https://dchang0611.github.io/redundancy-audit-site").rstrip("/")
+    base = os.getenv("HISTORY_BASE_URL", "https://dchang0611.github.io/dc-daily-home-run-board").rstrip("/")
     HISTORY.mkdir(parents=True, exist_ok=True)
     try:
         with urlopen(f"{base}/data/history/index.json", timeout=15) as response:
@@ -36,7 +36,7 @@ def build_backtest_payload() -> dict:
     scored_path = ROOT / f"{PREFIX}_scored_test_rows.csv"
     if not summary_path.exists() or not scored_path.exists():
         try:
-            with urlopen("https://dchang0611.github.io/redundancy-audit-site/data/board.json", timeout=15) as response:
+            with urlopen("https://dchang0611.github.io/dc-daily-home-run-board/data/board.json", timeout=15) as response:
                 return json.load(response).get("backtest", {"summary": [], "daily": [], "drivers": []})
         except Exception:
             return {"summary": [], "daily": [], "drivers": []}
