@@ -64,6 +64,16 @@ def build_backtest_payload() -> dict:
     }
     for top_n in [10, 20, 30, 40]:
         ranked = scored.groupby("game_date", as_index=False, group_keys=False).head(top_n)
+        ranked["day_rank"] = ranked.groupby("game_date")[sort_col].rank(method="first", ascending=False).astype(int)
+        name_col = next((c for c in ["batter_name", "batter_name_hand", "player_name"] if c in ranked), "batter")
+        homer_rows = ranked[pd.to_numeric(ranked["home_run_game"], errors="coerce").fillna(0) > 0]
+        homer_hitters = {}
+        for game_date, group in homer_rows.groupby("game_date"):
+            key = pd.to_datetime(game_date).strftime("%Y-%m-%d")
+            homer_hitters[key] = [
+                {"name": clean(row[name_col]), "rank": int(row["day_rank"]), "probability": clean(row[sort_col])}
+                for _, row in group.sort_values("day_rank").iterrows()
+            ]
         daily = ranked.groupby("game_date", as_index=False).agg(
             players=("batter", "count"), homers=("home_run_game", "sum"), avg_model_prob=(sort_col, "mean")
         ).sort_values("game_date")
@@ -73,9 +83,10 @@ def build_backtest_payload() -> dict:
         daily["cumulative_hit_rate"] = daily["cumulative_homers"] / daily["cumulative_players"]
         daily["top_n"] = top_n
         daily["game_date"] = daily["game_date"].dt.strftime("%Y-%m-%d")
-        daily_records.extend(
-            {key: clean(value) for key, value in row.items()} for row in daily.to_dict("records")
-        )
+        for row in daily.to_dict("records"):
+            record = {key: clean(value) for key, value in row.items()}
+            record["home_run_hitters"] = homer_hitters.get(record["game_date"], [])
+            daily_records.append(record)
         available = [c for c in driver_columns if c in ranked.columns]
         if available and len(daily) >= 8:
             outcomes = daily.copy()
@@ -160,6 +171,13 @@ def main() -> None:
     }
     (SITE / "data").mkdir(parents=True, exist_ok=True)
     (SITE / "data" / "board.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    for history_file in HISTORY.glob("????-??-??.json"):
+        try:
+            historical_payload = json.loads(history_file.read_text(encoding="utf-8"))
+            historical_payload["backtest"] = payload["backtest"]
+            history_file.write_text(json.dumps(historical_payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"Could not refresh backtest data in {history_file.name}: {exc}")
     if records:
         (HISTORY / f"{target_date}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     history_dates = sorted((p.stem for p in HISTORY.glob("????-??-??.json")), reverse=True)
