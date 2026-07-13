@@ -17,7 +17,7 @@ def build_backtest_payload() -> dict:
     summary_path = ROOT / f"{PREFIX}_backtest_summary.csv"
     scored_path = ROOT / f"{PREFIX}_scored_test_rows.csv"
     if not summary_path.exists() or not scored_path.exists():
-        return {"summary": [], "daily": []}
+        return {"summary": [], "daily": [], "drivers": []}
 
     summary = pd.read_csv(summary_path)
     summary_records = [
@@ -31,6 +31,15 @@ def build_backtest_payload() -> dict:
     sort_col = "pred_hr_prob" if "pred_hr_prob" in scored else "raw_hr_prob"
     scored = scored.sort_values(sort_col, ascending=False).drop_duplicates(["game_date", "batter"])
     daily_records = []
+    driver_records = []
+    driver_columns = {
+        "batter_power_score_prior": "Batter power", "batter_recent_hr_rate_10": "Recent HR rate",
+        "batter_barrel_rate_prior": "Barrel rate", "batter_hard_hit_rate_prior": "Hard-hit rate",
+        "pitcher_damage_score_prior": "Pitcher vulnerability", "pitcher_hr_rate_allowed_prior": "Pitcher HR rate allowed",
+        "pitcher_recent_hr_allowed_rate_10": "Recent pitcher HR rate allowed", "pitcher_k_rate_prior": "Pitcher strikeout rate",
+        "park_factor": "Park factor", "temp_f": "Temperature", "pull_wind_mph": "Pull-side wind",
+        "batter_recent_pa_10": "Recent plate appearances",
+    }
     for top_n in [10, 20, 50]:
         ranked = scored.groupby("game_date", as_index=False, group_keys=False).head(top_n)
         daily = ranked.groupby("game_date", as_index=False).agg(
@@ -45,7 +54,25 @@ def build_backtest_payload() -> dict:
         daily_records.extend(
             {key: clean(value) for key, value in row.items()} for row in daily.to_dict("records")
         )
-    return {"summary": summary_records, "daily": daily_records}
+        available = [c for c in driver_columns if c in ranked.columns]
+        if available and len(daily) >= 8:
+            outcomes = daily.copy()
+            outcomes["game_date"] = pd.to_datetime(outcomes["game_date"], errors="coerce")
+            analysis = ranked.groupby("game_date")[available].mean(numeric_only=True).join(
+                outcomes.set_index("game_date")["hit_rate"], how="inner"
+            ).dropna(subset=["hit_rate"])
+            low_cut, high_cut = analysis.hit_rate.quantile(.25), analysis.hit_rate.quantile(.75)
+            for col in available:
+                sample = analysis[[col, "hit_rate"]].dropna()
+                if len(sample) < 8 or sample[col].nunique() < 2: continue
+                median = sample[col].median(); lower = sample[sample[col] <= median].hit_rate; upper = sample[sample[col] > median].hit_rate
+                driver_records.append({"top_n": top_n, "metric": col, "label": driver_columns[col],
+                    "correlation": clean(sample[col].corr(sample.hit_rate)),
+                    "low_day_avg": clean(sample.loc[sample.hit_rate <= low_cut, col].mean()),
+                    "high_day_avg": clean(sample.loc[sample.hit_rate >= high_cut, col].mean()),
+                    "median": clean(median), "hit_rate_below_median": clean(lower.mean()),
+                    "hit_rate_above_median": clean(upper.mean()), "days_below": int(len(lower)), "days_above": int(len(upper))})
+    return {"summary": summary_records, "daily": daily_records, "drivers": driver_records}
 
 
 def latest_board() -> Path:
