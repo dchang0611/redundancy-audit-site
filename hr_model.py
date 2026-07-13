@@ -47,7 +47,7 @@ RUN_FORWARD_BOARD = True
 
 # If True, grade the forward board against official MLB boxscores for TARGET_DATE
 RUN_HR_CHECK = os.getenv("RUN_HR_CHECK", "false").lower() == "true"
-HR_CHECK_TOP_NS = [10, 20, 30]
+HR_CHECK_TOP_NS = [10, 20, 30, 40]
 
 # Cache
 USE_CACHE = True
@@ -67,7 +67,7 @@ CACHE_DIR = "cache_trained_model"
 # Daily board options
 MAX_BATTERS_PER_TEAM = 9
 MIN_FORWARD_RECENT_PA_10 = 2
-TOP_N_OUTPUT = 50
+TOP_N_OUTPUT = 40
 
 # Feature audit / redundancy pruning
 # Keeps the printed/CSV output the same, but trains the probability model on a cleaner feature set.
@@ -2334,7 +2334,7 @@ def run_backtest(model, calibrator, test_df: pd.DataFrame) -> None:
     evaluate_probs(scored["home_run_game"], scored["calibrated_hr_prob"], "Test set calibrated")
 
     summaries = []
-    for n in [10, 20, 50]:
+    for n in [10, 20, 30, 40]:
         summaries.append(summarize_top_n(scored, n))
 
     summary_df = pd.DataFrame(summaries)

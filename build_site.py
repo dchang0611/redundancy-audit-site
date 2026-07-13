@@ -40,7 +40,7 @@ def build_backtest_payload() -> dict:
         "park_factor": "Park factor", "temp_f": "Temperature", "pull_wind_mph": "Pull-side wind",
         "batter_recent_pa_10": "Recent plate appearances",
     }
-    for top_n in [10, 20, 50]:
+    for top_n in [10, 20, 30, 40]:
         ranked = scored.groupby("game_date", as_index=False, group_keys=False).head(top_n)
         daily = ranked.groupby("game_date", as_index=False).agg(
             players=("batter", "count"), homers=("home_run_game", "sum"), avg_model_prob=(sort_col, "mean")
@@ -129,7 +129,7 @@ def main() -> None:
     payload = {
         "targetDate": target_date,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "featuredCount": min(50, len(records)),
+        "featuredCount": min(40, len(records)),
         "backtest": build_backtest_payload(),
         "rows": records,
     }
