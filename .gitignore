@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+cache_trained_model/
+trained_hr_model_*.csv
+site/data/*.csv
+!site/data/.gitkeep
