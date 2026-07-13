@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,8 +65,12 @@ def clean(value):
 
 
 def main() -> None:
-    board_path = latest_board()
-    frame = pd.read_csv(board_path).sort_values("ranking")
+    try:
+        board_path = latest_board()
+        frame = pd.read_csv(board_path).sort_values("ranking")
+    except FileNotFoundError:
+        board_path = None
+        frame = pd.DataFrame()
     columns = [
         "ranking", "game_pk", "commence_time", "batter_name_hand", "batting_team",
         "fielding_team", "is_home_batter", "game_matchup", "pitcher_name_hand",
@@ -88,7 +93,12 @@ def main() -> None:
         {key: clean(value) for key, value in row.items()}
         for row in frame[[c for c in columns if c in frame.columns]].to_dict("records")
     ]
-    target_date = str(frame["target_date"].iloc[0]) if "target_date" in frame else board_path.stem[-10:]
+    if not frame.empty and "target_date" in frame:
+        target_date = str(frame["target_date"].iloc[0])
+    elif board_path is not None:
+        target_date = board_path.stem[-10:]
+    else:
+        target_date = os.getenv("TARGET_DATE", datetime.now(timezone.utc).date().isoformat())
     payload = {
         "targetDate": target_date,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
