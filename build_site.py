@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.request import urlopen
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,23 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 SITE = ROOT / "site"
 PREFIX = "trained_hr_model"
+HISTORY = SITE / "data" / "history"
+
+
+def restore_history() -> None:
+    """Carry prior deployed snapshots into the next immutable Pages artifact."""
+    base = os.getenv("HISTORY_BASE_URL", "https://dchang0611.github.io/redundancy-audit-site").rstrip("/")
+    HISTORY.mkdir(parents=True, exist_ok=True)
+    try:
+        with urlopen(f"{base}/data/history/index.json", timeout=15) as response:
+            index = json.load(response)
+        for slate_date in index.get("dates", []):
+            if not str(slate_date).replace("-", "").isdigit():
+                continue
+            with urlopen(f"{base}/data/history/{slate_date}.json", timeout=15) as response:
+                (HISTORY / f"{slate_date}.json").write_bytes(response.read())
+    except Exception as exc:
+        print(f"No prior history archive restored: {exc}")
 
 
 def build_backtest_payload() -> dict:
@@ -92,6 +110,7 @@ def clean(value):
 
 
 def main() -> None:
+    restore_history()
     try:
         board_path = latest_board()
         frame = pd.read_csv(board_path).sort_values("ranking")
@@ -137,6 +156,10 @@ def main() -> None:
     }
     (SITE / "data").mkdir(parents=True, exist_ok=True)
     (SITE / "data" / "board.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if records:
+        (HISTORY / f"{target_date}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    history_dates = sorted((p.stem for p in HISTORY.glob("????-??-??.json")), reverse=True)
+    (HISTORY / "index.json").write_text(json.dumps({"dates": history_dates}, indent=2), encoding="utf-8")
     frame.to_csv(SITE / "data" / "latest-board.csv", index=False)
 
 
