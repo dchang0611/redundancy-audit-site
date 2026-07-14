@@ -29,6 +29,11 @@ def restore_history() -> None:
                 continue
             with urlopen(f"{base}/data/history/{slate_date}.json", timeout=15) as response:
                 (HISTORY / f"{slate_date}.json").write_bytes(response.read())
+        try:
+            with urlopen(f"{base}/data/model-impact-test.json", timeout=15) as response:
+                (SITE / "data" / "model-impact-test.json").write_bytes(response.read())
+        except Exception:
+            pass
     except Exception as exc:
         print(f"No prior history archive restored: {exc}")
 

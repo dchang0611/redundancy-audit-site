@@ -41,6 +41,7 @@ RECENCY_WEIGHT_2026 = 1.40
 
 # If True, build historical out-of-sample backtest rows for all dates > VALID_END_DATE
 RUN_BACKTEST = os.getenv("RUN_BACKTEST", "true").lower() == "true"
+RUN_IMPACT_TEST = os.getenv("RUN_IMPACT_TEST", "false").lower() == "true"
 
 # If True, also create a forward-looking board for TARGET_DATE
 RUN_FORWARD_BOARD = True
@@ -3344,6 +3345,17 @@ def main():
 
     if RUN_BACKTEST:
         run_backtest(model, calibrator, test_df)
+
+    if RUN_IMPACT_TEST:
+        from model_impact_test import run_model_impact_test
+
+        run_model_impact_test(
+            frozen_model=model,
+            model_df=model_df,
+            test_df=test_df,
+            feature_columns=get_model_feature_columns(),
+            sample_weight_fn=add_recency_sample_weights,
+        )
 
     if RUN_FORWARD_BOARD:
         board = build_forward_board_input(model_df, pa_df, TARGET_DATE)
