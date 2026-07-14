@@ -2922,11 +2922,15 @@ def build_asof_batter_pitch_group_snapshot(pa_df: pd.DataFrame) -> pd.DataFrame:
         pa=("pa", "sum"), hr=("hr", "sum"), barrels=("barrels", "sum"),
         hard_hits=("hard_hits", "sum"), ev_sum=("ev_sum", "sum"),
     )
+    barrel_rate = pd.Series(rate(out["barrels"], out["pa"]), index=out.index).fillna(0)
+    hard_hit_rate = pd.Series(rate(out["hard_hits"], out["pa"]), index=out.index).fillna(0)
+    hr_rate = pd.Series(rate(out["hr"], out["pa"]), index=out.index).fillna(0)
+    avg_ev = pd.Series(rate(out["ev_sum"], out["pa"]), index=out.index).fillna(0)
     out["batter_pitch_score_prior"] = (
-        0.45 * rate(out["barrels"], out["pa"]).fillna(0)
-        + 0.25 * rate(out["hard_hits"], out["pa"]).fillna(0)
-        + 0.20 * rate(out["hr"], out["pa"]).fillna(0)
-        + 0.10 * (rate(out["ev_sum"], out["pa"]).fillna(0) / 100.0)
+        0.45 * barrel_rate
+        + 0.25 * hard_hit_rate
+        + 0.20 * hr_rate
+        + 0.10 * (avg_ev / 100.0)
     )
     return out[["batter", "pitch_group", "batter_pitch_score_prior"]]
 
