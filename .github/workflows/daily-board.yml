@@ -4,8 +4,10 @@ on:
   push:
     branches: ["main"]
   schedule:
-    # 16:15 UTC is 9:15 AM Pacific during daylight time.
+    # Preliminary morning board, midday lineup refresh, and afternoon final refresh.
     - cron: "15 16 * * *"
+    - cron: "45 18 * * *"
+    - cron: "15 21 * * *"
   workflow_dispatch:
     inputs:
       target_date:

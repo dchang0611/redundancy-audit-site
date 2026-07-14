@@ -1,0 +1,6 @@
+.summary{grid-template-columns:repeat(4,1fr)}
+.lineup-note{color:var(--accent);font-weight:800;margin:4px 0 0}
+.lineup-badge{display:inline-block;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;letter-spacing:.04em;text-transform:uppercase}
+.lineup-badge.confirmed{background:#245338;color:var(--accent)}
+.lineup-badge.preliminary{background:#5a4c21;color:#fff0b8}
+@media(max-width:750px){.summary{grid-template-columns:1fr}}

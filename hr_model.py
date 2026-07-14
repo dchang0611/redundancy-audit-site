@@ -2394,6 +2394,23 @@ def get_daily_slate(target_date: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def get_confirmed_lineup_ids(game_pk: int) -> dict[str, set[int]]:
+    """Return official starting batter IDs once MLB has posted the lineup."""
+    payload = get_json(f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live")
+    confirmed = {"away": set(), "home": set()}
+    if not payload:
+        return confirmed
+    teams = payload.get("liveData", {}).get("boxscore", {}).get("teams", {})
+    for side in ("away", "home"):
+        players = teams.get(side, {}).get("players", {})
+        for player in players.values():
+            order = pd.to_numeric(player.get("battingOrder"), errors="coerce")
+            player_id = player.get("person", {}).get("id")
+            if player_id is not None and pd.notna(order) and int(order) % 100 == 0:
+                confirmed[side].add(int(player_id))
+    return confirmed
+
+
 def fetch_weather_for_game(lat: float, lon: float, start_iso_utc: str) -> dict:
     if pd.isna(lat) or pd.isna(lon) or not start_iso_utc:
         return {
@@ -2764,6 +2781,190 @@ def get_active_roster_ids(team_id: int, target_date: Optional[str] = None) -> Li
     return ids
 
 
+def build_asof_batter_snapshot(pa_df: pd.DataFrame, model_df: pd.DataFrame, target_date: str) -> pd.DataFrame:
+    games = (
+        pa_df.groupby(["game_date", "game_pk", "batter"], as_index=False)
+        .agg(
+            pa=("events", "count"),
+            hr_count=("home_run", "sum"),
+            barrels=("barrel", "sum"),
+            hard_hits=("hard_hit", "sum"),
+            avg_ev=("launch_speed", "mean"),
+        )
+    )
+    games["avg_ev"] = games["avg_ev"].fillna(0)
+    games["home_run_game"] = (games["hr_count"] > 0).astype(int)
+    latest = games.sort_values(["batter", "game_date", "game_pk"]).groupby("batter", as_index=False).tail(1)
+    synthetic = latest.copy()
+    synthetic["game_date"] = pd.to_datetime(target_date)
+    synthetic["game_pk"] = np.int64(9_999_999_999)
+    for col in ["pa", "hr_count", "barrels", "hard_hits", "avg_ev", "home_run_game"]:
+        synthetic[col] = 0
+    games["snapshot_marker"] = 0
+    synthetic["snapshot_marker"] = 1
+    featured = add_batter_pregame_features(pd.concat([games, synthetic], ignore_index=True))
+    snapshot = featured[featured["snapshot_marker"] == 1].copy()
+    identity_cols = ["batter", "batter_name", "batter_name_norm", "batter_hand"]
+    identity = (
+        model_df.sort_values(["batter", "game_date", "game_pk"])
+        .groupby("batter", as_index=False)
+        .tail(1)[identity_cols]
+        .drop_duplicates("batter")
+    )
+    snapshot = snapshot.merge(identity, on="batter", how="left")
+    snapshot["log_batter_pa_prior"] = np.log1p(snapshot["batter_pa_prior"])
+    keep_cols = [
+        "batter", "batter_name", "batter_name_norm", "batter_hand",
+        "batter_games_prior", "batter_pa_prior", "batter_hr_rate_prior",
+        "batter_barrel_rate_prior", "batter_hard_hit_rate_prior", "batter_avg_ev_prior",
+        "batter_recent_hr_rate_10", "batter_recent_hr_rate_20",
+        "batter_recent_barrel_rate_10", "batter_recent_hard_hit_rate_10",
+        "batter_recent_avg_ev_10", "batter_recent_pa_10", "batter_power_score_prior",
+        "log_batter_pa_prior",
+    ]
+    return snapshot[keep_cols].drop_duplicates("batter")
+
+
+def build_asof_pitcher_snapshot(pa_df: pd.DataFrame, target_date: str) -> pd.DataFrame:
+    games = build_pitcher_game_dataset(pa_df)
+    latest = games.sort_values(["pitcher", "game_date", "game_pk"]).groupby("pitcher", as_index=False).tail(1)
+    synthetic = latest.copy()
+    synthetic["game_date"] = pd.to_datetime(target_date)
+    synthetic["game_pk"] = np.int64(9_999_999_999)
+    for col in [
+        "pitcher_pa", "hr_allowed", "barrels_allowed", "hard_hits_allowed",
+        "avg_ev_allowed", "batters_faced", "strikeouts", "batted_balls_allowed",
+        "fly_balls_allowed", "ground_balls_allowed", "hr_allowed_game",
+    ]:
+        synthetic[col] = 0
+    games["snapshot_marker"] = 0
+    synthetic["snapshot_marker"] = 1
+    featured = add_pitcher_pregame_features(pd.concat([games, synthetic], ignore_index=True))
+    snapshot = featured[featured["snapshot_marker"] == 1].copy()
+    snapshot["log_pitcher_pa_prior"] = np.log1p(snapshot["pitcher_pa_prior"])
+    keep_cols = [
+        "pitcher", "pitcher_hand", "pitcher_games_prior", "pitcher_pa_prior",
+        "pitcher_hr_rate_allowed_prior", "pitcher_barrel_rate_allowed_prior",
+        "pitcher_hard_hit_rate_allowed_prior", "pitcher_avg_ev_allowed_prior",
+        "pitcher_k_rate_prior", "pitcher_recent_k_rate_5", "pitcher_recent_k_rate_10",
+        "pitcher_fb_rate_allowed_prior", "pitcher_gb_rate_allowed_prior",
+        "pitcher_recent_fb_rate_allowed_5", "pitcher_recent_fb_rate_allowed_10",
+        "pitcher_recent_gb_rate_allowed_5", "pitcher_recent_gb_rate_allowed_10",
+        "pitcher_recent_hr_allowed_rate_10", "pitcher_recent_hr_allowed_rate_20",
+        "pitcher_recent_barrel_allowed_rate_10", "pitcher_recent_avg_ev_allowed_10",
+        "pitcher_damage_score_prior", "log_pitcher_pa_prior",
+    ]
+    return snapshot[keep_cols].drop_duplicates("pitcher")
+
+
+def build_asof_batter_hand_snapshot(pa_df: pd.DataFrame) -> pd.DataFrame:
+    games = (
+        pa_df.groupby(["game_date", "game_pk", "batter", "p_throws"], as_index=False)
+        .agg(
+            pa=("events", "count"), hr=("home_run", "sum"), barrels=("barrel", "sum"),
+            hard_hits=("hard_hit", "sum"), avg_ev=("launch_speed", "mean"),
+        )
+        .rename(columns={"p_throws": "starter_pitcher_hand"})
+    )
+    games["avg_ev"] = games["avg_ev"].fillna(0)
+    games["ev_sum"] = games["avg_ev"] * games["pa"]
+    out = games.groupby(["batter", "starter_pitcher_hand"], as_index=False).agg(
+        batter_pa_vs_hand_prior=("pa", "sum"), batter_hr_vs_hand_prior=("hr", "sum"),
+        batter_barrels_vs_hand_prior=("barrels", "sum"),
+        batter_hard_hits_vs_hand_prior=("hard_hits", "sum"), batter_ev_sum_vs_hand_prior=("ev_sum", "sum"),
+    )
+    out["batter_hr_rate_vs_hand_prior"] = rate(out["batter_hr_vs_hand_prior"], out["batter_pa_vs_hand_prior"])
+    out["batter_barrel_rate_vs_hand_prior"] = rate(out["batter_barrels_vs_hand_prior"], out["batter_pa_vs_hand_prior"])
+    out["batter_hard_hit_rate_vs_hand_prior"] = rate(out["batter_hard_hits_vs_hand_prior"], out["batter_pa_vs_hand_prior"])
+    out["batter_avg_ev_vs_hand_prior"] = rate(out["batter_ev_sum_vs_hand_prior"], out["batter_pa_vs_hand_prior"])
+    return out[[
+        "batter", "starter_pitcher_hand", "batter_pa_vs_hand_prior", "batter_hr_rate_vs_hand_prior",
+        "batter_barrel_rate_vs_hand_prior", "batter_hard_hit_rate_vs_hand_prior", "batter_avg_ev_vs_hand_prior",
+    ]]
+
+
+def build_asof_pitcher_hand_snapshot(pa_df: pd.DataFrame) -> pd.DataFrame:
+    games = (
+        pa_df.groupby(["game_date", "game_pk", "pitcher", "stand"], as_index=False)
+        .agg(
+            pa=("events", "count"), hr=("home_run", "sum"), barrels=("barrel", "sum"),
+            hard_hits=("hard_hit", "sum"), avg_ev=("launch_speed", "mean"),
+        )
+        .rename(columns={"stand": "batter_hand"})
+    )
+    games["avg_ev"] = games["avg_ev"].fillna(0)
+    games["ev_sum"] = games["avg_ev"] * games["pa"]
+    out = games.groupby(["pitcher", "batter_hand"], as_index=False).agg(
+        pitcher_pa_vs_batter_hand_prior=("pa", "sum"), pitcher_hr_vs_batter_hand_prior=("hr", "sum"),
+        pitcher_barrels_vs_batter_hand_prior=("barrels", "sum"),
+        pitcher_hard_hits_vs_batter_hand_prior=("hard_hits", "sum"),
+        pitcher_ev_sum_vs_batter_hand_prior=("ev_sum", "sum"),
+    )
+    out["pitcher_hr_rate_vs_batter_hand_prior"] = rate(out["pitcher_hr_vs_batter_hand_prior"], out["pitcher_pa_vs_batter_hand_prior"])
+    out["pitcher_barrel_rate_vs_batter_hand_prior"] = rate(out["pitcher_barrels_vs_batter_hand_prior"], out["pitcher_pa_vs_batter_hand_prior"])
+    out["pitcher_hard_hit_rate_vs_batter_hand_prior"] = rate(out["pitcher_hard_hits_vs_batter_hand_prior"], out["pitcher_pa_vs_batter_hand_prior"])
+    out["pitcher_avg_ev_vs_batter_hand_prior"] = rate(out["pitcher_ev_sum_vs_batter_hand_prior"], out["pitcher_pa_vs_batter_hand_prior"])
+    return out[[
+        "pitcher", "batter_hand", "pitcher_pa_vs_batter_hand_prior", "pitcher_hr_rate_vs_batter_hand_prior",
+        "pitcher_barrel_rate_vs_batter_hand_prior", "pitcher_hard_hit_rate_vs_batter_hand_prior",
+        "pitcher_avg_ev_vs_batter_hand_prior",
+    ]]
+
+
+def build_asof_batter_pitch_group_snapshot(pa_df: pd.DataFrame) -> pd.DataFrame:
+    games = pa_df.groupby(["game_date", "game_pk", "batter", "pitch_group"], as_index=False).agg(
+        pa=("events", "count"), hr=("home_run", "sum"), barrels=("barrel", "sum"),
+        hard_hits=("hard_hit", "sum"), avg_ev=("launch_speed", "mean"),
+    )
+    games["avg_ev"] = games["avg_ev"].fillna(0)
+    games["ev_sum"] = games["avg_ev"] * games["pa"]
+    out = games.groupby(["batter", "pitch_group"], as_index=False).agg(
+        pa=("pa", "sum"), hr=("hr", "sum"), barrels=("barrels", "sum"),
+        hard_hits=("hard_hits", "sum"), ev_sum=("ev_sum", "sum"),
+    )
+    out["batter_pitch_score_prior"] = (
+        0.45 * rate(out["barrels"], out["pa"]).fillna(0)
+        + 0.25 * rate(out["hard_hits"], out["pa"]).fillna(0)
+        + 0.20 * rate(out["hr"], out["pa"]).fillna(0)
+        + 0.10 * (rate(out["ev_sum"], out["pa"]).fillna(0) / 100.0)
+    )
+    return out[["batter", "pitch_group", "batter_pitch_score_prior"]]
+
+
+def build_asof_pitcher_pitch_group_snapshot(pa_df: pd.DataFrame) -> pd.DataFrame:
+    out = pa_df.groupby(["pitcher", "pitch_group"], as_index=False).size().rename(columns={"size": "pitch_count"})
+    totals = out.groupby("pitcher")["pitch_count"].transform("sum")
+    out["pitch_usage_prior"] = rate(out["pitch_count"], totals)
+    return out[["pitcher", "pitch_group", "pitch_usage_prior"]]
+
+
+def build_asof_matchup_snapshot(pa_df: pd.DataFrame, target_date: str) -> pd.DataFrame:
+    games = build_matchup_game_history(pa_df)
+    latest = games.sort_values(["batter", "pitcher", "game_date", "game_pk"]).groupby(
+        ["batter", "pitcher"], as_index=False
+    ).tail(1)
+    synthetic = latest.copy()
+    synthetic["game_date"] = pd.to_datetime(target_date)
+    synthetic["game_pk"] = np.int64(9_999_999_999)
+    for col in [
+        "matchup_pa_game", "matchup_hr_game", "matchup_barrels_game", "matchup_hard_hits_game",
+        "matchup_avg_ev_game", "matchup_hr_game_flag",
+    ]:
+        synthetic[col] = 0
+    games["snapshot_marker"] = 0
+    synthetic["snapshot_marker"] = 1
+    featured = add_matchup_pregame_features(pd.concat([games, synthetic], ignore_index=True))
+    snapshot = featured[featured["snapshot_marker"] == 1].copy()
+    cols = [
+        "batter", "pitcher", "matchup_games_prior", "matchup_pa_prior", "matchup_hr_prior",
+        "matchup_hr_rate_prior", "matchup_barrel_rate_prior", "matchup_hard_hit_rate_prior",
+        "matchup_avg_ev_prior", "matchup_recent_hr_rate_3", "matchup_recent_hr_rate_5",
+        "matchup_recent_barrel_rate_3", "matchup_recent_avg_ev_3", "matchup_recent_pa_3",
+        "matchup_history_score_prior",
+    ]
+    return snapshot[cols].drop_duplicates(["batter", "pitcher"])
+
+
 def build_latest_batter_snapshot(model_df: pd.DataFrame) -> pd.DataFrame:
     keep_cols = [
         "batter", "batter_name", "batter_name_norm", "batter_hand",
@@ -2914,13 +3115,13 @@ def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, targe
     print_slate_weather_table(slate)
 
     team_id_map = get_team_id_map()
-    batter_snapshot = build_latest_batter_snapshot(model_df)
-    pitcher_snapshot = build_latest_pitcher_snapshot(model_df)
-    batter_hand_snapshot = build_latest_batter_hand_snapshot(model_df)
-    pitcher_hand_snapshot = build_latest_pitcher_hand_snapshot(model_df)
-    batter_pitch_snapshot = build_latest_batter_pitch_group_snapshot(pa_df)
-    pitcher_pitch_snapshot = build_latest_pitcher_pitch_group_snapshot(pa_df)
-    matchup_snapshot = build_latest_matchup_snapshot(model_df)
+    batter_snapshot = build_asof_batter_snapshot(pa_df, model_df, target_date)
+    pitcher_snapshot = build_asof_pitcher_snapshot(pa_df, target_date)
+    batter_hand_snapshot = build_asof_batter_hand_snapshot(pa_df)
+    pitcher_hand_snapshot = build_asof_pitcher_hand_snapshot(pa_df)
+    batter_pitch_snapshot = build_asof_batter_pitch_group_snapshot(pa_df)
+    pitcher_pitch_snapshot = build_asof_pitcher_pitch_group_snapshot(pa_df)
+    matchup_snapshot = build_asof_matchup_snapshot(pa_df, target_date)
 
     rows = []
     for _, game in slate.iterrows():
@@ -2934,9 +3135,16 @@ def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, targe
 
         away_roster = get_active_roster_ids(away_team_id, target_date)
         home_roster = get_active_roster_ids(home_team_id, target_date)
+        confirmed_lineups = get_confirmed_lineup_ids(game["game_pk"])
+        away_lineup_confirmed = len(confirmed_lineups["away"]) >= 9
+        home_lineup_confirmed = len(confirmed_lineups["home"]) >= 9
 
         away_hitters = batter_snapshot[batter_snapshot["batter"].isin(away_roster)].copy()
         home_hitters = batter_snapshot[batter_snapshot["batter"].isin(home_roster)].copy()
+        if away_lineup_confirmed:
+            away_hitters = away_hitters[away_hitters["batter"].isin(confirmed_lineups["away"])].copy()
+        if home_lineup_confirmed:
+            home_hitters = home_hitters[home_hitters["batter"].isin(confirmed_lineups["home"])].copy()
 
         away_hitters["batter_recent_pa_10"] = pd.to_numeric(away_hitters["batter_recent_pa_10"], errors="coerce").fillna(0)
         home_hitters["batter_recent_pa_10"] = pd.to_numeric(home_hitters["batter_recent_pa_10"], errors="coerce").fillna(0)
@@ -2982,6 +3190,8 @@ def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, targe
                         "fielding_team": home_team,
                         "venue_team": home_team,
                         "is_home_batter": 0,
+                        "lineup_confirmed": int(away_lineup_confirmed),
+                        "lineup_status": "Confirmed starter" if away_lineup_confirmed else "Preliminary",
                         "park_factor": game["park_factor"],
                         "temp_f": game["temp_f"],
                         "wind_speed_mph": game["wind_speed_mph"],
@@ -3022,6 +3232,8 @@ def build_forward_board_input(model_df: pd.DataFrame, pa_df: pd.DataFrame, targe
                         "fielding_team": away_team,
                         "venue_team": home_team,
                         "is_home_batter": 1,
+                        "lineup_confirmed": int(home_lineup_confirmed),
+                        "lineup_status": "Confirmed starter" if home_lineup_confirmed else "Preliminary",
                         "park_factor": game["park_factor"],
                         "temp_f": game["temp_f"],
                         "wind_speed_mph": game["wind_speed_mph"],

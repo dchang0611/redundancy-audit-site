@@ -221,6 +221,7 @@ def main() -> None:
     columns = [
         "ranking", "game_pk", "commence_time", "batter", "batter_name_hand", "batting_team",
         "fielding_team", "is_home_batter", "game_matchup", "pitcher_name_hand",
+        "lineup_confirmed", "lineup_status",
         "final_hr_probability", "calibrated_hr_probability", "bet_quality_score",
         "batter_power", "recent_form", "pitcher_vulnerability", "handedness_splits",
         "pitch_type_matchup", "matchup_history", "environment", "pa_opportunity",
